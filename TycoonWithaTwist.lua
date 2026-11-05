@@ -181,9 +181,16 @@ local netState = {
     obbyClaimStamp = { diamond = 0, golden = 0 },   -- confirmações separadas pelo Title
     obbyLastTitle = { diamond = nil, golden = nil },
     obbyLastCash = { diamond = nil, golden = nil },
+    boughtStamp = 0,
+    lastBoughtId = nil,
 }
 
 local function handleNetEvent(name, data)
+    if name == "Bought" and type(data) == "table" then
+        netState.boughtStamp = netState.boughtStamp + 1
+        netState.lastBoughtId = tostring(data.Id or "")
+    end
+
     -- O servidor usa o mesmo evento "Obby", mas o Title identifica qual recompensa foi entregue.
     if name == "Obby" and type(data) == "table" then
         local title = tostring(data.Title or "")
@@ -1208,6 +1215,154 @@ function Rebirth:Tick()
             self:SetStatus("Solicitação enviada; aguardando confirmação do servidor", "warn")
         end
     end
+end
+
+
+---------------------------------------------------------------------
+-- 7) AUTO BUY (teleporte contínuo para Pads verdes do próprio Tycoon)
+-- A posição do Tycoon é resolvida pelo atributo OwnerId do jogador local.
+-- A elegibilidade é lida da cor do próprio BasePart "Pad".
+---------------------------------------------------------------------
+local AutoBuy = newFeature({
+    Id = "auto_buy", Name = "Auto Buy", Category = "Progresso", Interval = 0.5,
+})
+
+local AUTO_BUY_GREEN = Color3.fromRGB(76, 190, 92)
+local AUTO_BUY_COLOR_TOLERANCE = 24
+local AUTO_BUY_CONFIRM_TIMEOUT = 5
+local AUTO_BUY_HEIGHT = 2.5
+local autoBuyOrigin = nil
+local autoBuyBusy = false
+local autoBuyTriedAt = {}
+local autoBuyConfirmed = {}
+
+local function autoBuyIsGreen(part)
+    if not part or not part:IsA("BasePart") then return false end
+    local c = part.Color
+    return math.abs(c.R - AUTO_BUY_GREEN.R) * 255 <= AUTO_BUY_COLOR_TOLERANCE
+        and math.abs(c.G - AUTO_BUY_GREEN.G) * 255 <= AUTO_BUY_COLOR_TOLERANCE
+        and math.abs(c.B - AUTO_BUY_GREEN.B) * 255 <= AUTO_BUY_COLOR_TOLERANCE
+end
+
+local function autoBuyGetOwnedPlot()
+    local tycoons = Workspace:FindFirstChild("Tycoons")
+    if not tycoons then return nil end
+
+    for _, plot in ipairs(tycoons:GetChildren()) do
+        local ownerId = plot:GetAttribute("OwnerId")
+        if ownerId ~= nil and tonumber(ownerId) == LocalPlayer.UserId then
+            return plot
+        end
+    end
+    return nil
+end
+
+local function autoBuyGetGreenPads()
+    local plot = autoBuyGetOwnedPlot()
+    local padsFolder = plot and plot:FindFirstChild("Pads")
+    if not padsFolder then return {}, "Aguardando seu Tycoon/Pads" end
+
+    local available = {}
+    for _, pad in ipairs(padsFolder:GetChildren()) do
+        if pad:IsA("BasePart")
+            and pad:GetAttribute("Item") ~= nil
+            and tostring(pad:GetAttribute("Item")) ~= ""
+            and autoBuyIsGreen(pad) then
+
+            local itemId = tostring(pad:GetAttribute("Item"))
+            local lastTry = autoBuyTriedAt[itemId] or 0
+            if not autoBuyConfirmed[itemId] and os.clock() - lastTry >= 2 then
+                available[#available + 1] = {
+                    Part = pad,
+                    Id = itemId,
+                    Name = itemId,
+                }
+            end
+        end
+    end
+    return available, nil
+end
+
+function AutoBuy:OnEnable()
+    autoBuyTriedAt = {}
+    autoBuyConfirmed = {}
+    autoBuyBusy = false
+    local root = getCharacterParts()
+    autoBuyOrigin = root and root.CFrame or nil
+    self:SetStatus("Procurando Pads verdes no seu Tycoon...", "work")
+end
+
+function AutoBuy:OnDisable()
+    autoBuyBusy = false
+    local root = getCharacterParts()
+    if root and autoBuyOrigin then
+        root.CFrame = autoBuyOrigin
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+    autoBuyOrigin = nil
+    self:SetStatus("Desligado; posição inicial restaurada", "idle")
+end
+
+function AutoBuy:Tick()
+    if autoBuyBusy then return end
+    if LocalPlayer:GetAttribute("Loaded") == false then
+        self:SetStatus("Aguardando o jogo carregar", "idle")
+        return
+    end
+
+    local root = getCharacterParts()
+    if not root then
+        self:SetStatus("Aguardando personagem", "warn")
+        return
+    end
+    if not autoBuyOrigin then autoBuyOrigin = root.CFrame end
+
+    local pads, reason = autoBuyGetGreenPads()
+    if reason then
+        self:SetStatus(reason, "warn")
+        return
+    end
+
+    if #pads == 0 then
+        -- Continua ligado e monitorando; se um Pad ficar verde depois, irá até ele.
+        if autoBuyOrigin and (root.Position - autoBuyOrigin.Position).Magnitude > 5 then
+            root.CFrame = autoBuyOrigin
+            root.AssemblyLinearVelocity = Vector3.zero
+        end
+        self:SetStatus("Nenhum Pad verde; monitorando disponibilidade...", "idle")
+        return
+    end
+
+    -- Escolhe o primeiro Pad elegível encontrado nesta varredura.
+    local target = pads[1]
+    if not target.Part or not target.Part.Parent or not autoBuyIsGreen(target.Part) then
+        return
+    end
+
+    autoBuyBusy = true
+    local beforeStamp = netState.boughtStamp
+    self:SetStatus("Indo ao Pad " .. target.Id .. "...", "work")
+
+    root.CFrame = target.Part.CFrame + Vector3.new(0, AUTO_BUY_HEIGHT, 0)
+    root.AssemblyLinearVelocity = Vector3.zero
+
+    local confirmed = waitUntil(function()
+        return netState.boughtStamp > beforeStamp
+            and netState.lastBoughtId == target.Id
+    end, AUTO_BUY_CONFIRM_TIMEOUT, 0.1)
+
+    if confirmed then
+        autoBuyTriedAt[target.Id] = os.clock()
+        autoBuyConfirmed[target.Id] = true
+        self.Count = self.Count + 1
+        self:SetStatus("Compra confirmada: " .. target.Id .. " (" .. self.Count .. ")", "ok")
+    else
+        -- Evita ficar preso repetindo teleporte para um Pad que não confirmou.
+        autoBuyTriedAt[target.Id] = os.clock()
+        self:SetStatus("Sem confirmação para " .. target.Id .. "; verificando outros Pads", "warn")
+    end
+
+    autoBuyBusy = false
 end
 
 ---------------------------------------------------------------------
