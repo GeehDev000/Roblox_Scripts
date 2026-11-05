@@ -1,41 +1,7 @@
 --[[
-    TYCOON HELPER - "Tycoon, but one dropper" (Xeno)
+    Script_By_Geeh_000 - "Tycoon, but one dropper" (Xeno)
 
-    Construído SÓ com o que foi observado nos dumps/logs. Nada de remotes inventados.
-
-    O QUE É BASEADO EM EVIDÊNCIA (observado nos logs):
-      - Net (RemoteEvent) manda eventos do servidor com o nome no 1º argumento:
-          "Pail"      {Id, Life, Pos}   -> balde de doces apareceu (Workspace.CandyPail)
-          "PailGone"  {Got, Id}         -> balde coletado/sumiu
-          "CrateGone" {Got, Id}         -> caixa misteriosa coletada/sumiu
-          "Ev"        {K="Surge", P="Cell", Id, Candy, Until} -> coleta de célula Surge
-          Workspace.EventFX.EvCell      -> modelo visual da célula Surge
-          "Ev"        {K="Airdrop", P="Live", Crates={Id, L, D, A, G}}
-                                          -> horários de soltura/chegada e posições
-          "Ev"        {K="Airdrop", P="Got", Id, Name, By}
-                                          -> confirmação de coleta do Airdrop
-          "Mystery"   {Kind, Source, Amount}
-      - Atributos do Player: WheelNext, WheelSpins, QuestsReady, Cash, RebirthCost, Rebirths, Loaded,
-        OdUntil e OdReady (janela ativa/recarga do Overdrive), OdCharge (carga observada)
-      - Eventos Overdrive {Until, Ready} e OverdriveEnd {Ready} também informam o ciclo do Overdrive.
-      - WheelNext vira (hora do servidor + ~900s) depois de girar a roleta.
-      - O balde sumiu com o jogador a ~2,5 studs dele (coleta por proximidade, sem prompt).
-      - Botões do HUD: HUD.Main.Right.Spin, HUD.Main.Left.Rebirth
-
-    O QUE É SUPOSIÇÃO (por isso cada função mostra o resultado REAL na interface):
-      - Candy/Mystery: teleportar até o objeto coleta (proximidade). Verificado pelo evento
-        PailGone/CrateGone; se não vier, a interface mostra "não coletou".
-      - Surge Cell: procura o modelo visual EvCell em Workspace.EventFX e calcula a posição
-        pelo bounding box. A proximidade como gatilho é uma inferência; só conta sucesso
-        quando chega Ev {K="Surge", P="Cell"} e um atributo local (Candy/SurgeUntil) muda.
-      - Airdrop: L é tratado como a posição no solo; A coincide com a chegada da caixa
-        (D é anterior, quando ela é solta). O teleporte é feito após A e só conta com Got.
-        A proximidade como gatilho é uma inferência.
-      - Spin: ReplicatedStorage.Remotes.Action:InvokeServer("Spin") foi fornecido
-        pelo desenvolvedor. A disponibilidade é verificada por WheelNext/WheelSpins.
-      - Rebirth: continua usando o botão real do HUD, com confirmação pelo estado.
-      - AutoRebirthOn local foi removido: SetAttribute no cliente não equivale a habilitar
-        a opção no servidor.
+ 
 
     COMO ADICIONAR UMA FUNÇÃO NOVA: crie com newFeature{...} na seção "FUNÇÕES"
     (Id, Name, Category, Interval, Tick, OnEnable, OnDisable). A GUI e o agendador a incluem sozinhos.
