@@ -1720,8 +1720,43 @@ end
 ---------------------------------------------------------------------
 -- 10) AUTO CLAIM DOS DOIS OBBYS (DIAMOND / GOLDEN DROPPER)
 -- Cada Toast, confirmação e ponto de coleta é tratado separadamente.
+-- PowerNext/ObbyNext são lidos do Player local resolvido por UserId,
+-- nunca de um nome de jogador fixo.
 ---------------------------------------------------------------------
 local OBBY_WAIT_TIMEOUT = 15
+
+-- Resolve sempre o Player que executou esta cópia do script.
+-- Usa UserId como identidade; não depende de nomes como "Geeh_OOO".
+local function getExecutingPlayer()
+    local currentLocalPlayer = Players.LocalPlayer
+    if currentLocalPlayer and currentLocalPlayer.UserId then
+        local playerByUserId = Players:GetPlayerByUserId(currentLocalPlayer.UserId)
+        if playerByUserId then
+            return playerByUserId
+        end
+        return currentLocalPlayer
+    end
+    return nil
+end
+
+local function readObbyCooldownAttribute(attributeName)
+    local executingPlayer = getExecutingPlayer()
+    if not executingPlayer then
+        return nil, "Player local ainda não identificado"
+    end
+
+    local value = executingPlayer:GetAttribute(attributeName)
+    if value == nil then
+        return nil, "Atributo " .. attributeName .. " ainda não existe em Players." .. executingPlayer.Name
+    end
+
+    local numericValue = tonumber(value)
+    if not numericValue or numericValue <= 0 then
+        return nil, "Atributo " .. attributeName .. " inválido em Players." .. executingPlayer.Name
+    end
+
+    return numericValue, nil
+end
 
 local function resolveObbyReward(config)
     local node = Workspace
@@ -1764,15 +1799,19 @@ local function createObbyCollector(config)
         -- Isso também funciona se o Toast ocorreu antes de o helper ser iniciado.
         local readyAt = netState.obbyReadyAt[config.Key]
         local attributeName = config.Key == "diamond" and "PowerNext" or "ObbyNext"
-        local attributeNext = LocalPlayer:GetAttribute(attributeName)
 
-        if type(attributeNext) == "number" and attributeNext > 0 then
+        -- Lê o atributo do jogador que está executando o script nesta sessão.
+        -- tonumber também aceita atributos replicados como texto numérico.
+        local attributeNext, attributeError = readObbyCooldownAttribute(attributeName)
+        if attributeNext then
             readyAt = attributeNext
             netState.obbyReadyAt[config.Key] = attributeNext
         end
 
         if not readyAt then
-            self:SetStatus("Aguardando atributo " .. attributeName .. " ou Toast", "warn")
+            local executingPlayer = getExecutingPlayer()
+            local playerLabel = executingPlayer and executingPlayer.Name or "jogador local"
+            self:SetStatus("Aguardando " .. attributeName .. " de " .. playerLabel .. " ou Toast", "warn")
             return
         end
 
