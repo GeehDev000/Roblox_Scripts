@@ -1,0 +1,446 @@
+name: Scripts Monitor
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    types: [opened, reopened, synchronize, closed, edited]
+  issues:
+    types: [opened, closed, edited, reopened]
+  release:
+    types: [published, edited]
+  workflow_run:
+    # GitHub requires explicit workflow names here; add your actual workflow names.
+    workflows: ["CI", "Tests", "Build"]
+    types: [completed]
+
+# ==========================================================
+# CONFIGURAÇÃO CENTRAL
+# O webhook fica em Settings > Secrets and variables > Actions
+# com o nome DISCORD_WEBHOOK. Não cole a URL aqui.
+# ==========================================================
+env:
+  DISCORD_USERNAME: "Scripts Monitor"
+
+  # Eventos
+  MONITOR_PUSH: "true"
+  MONITOR_PULL_REQUESTS: "true"
+  MONITOR_ISSUES: "true"
+  MONITOR_RELEASES: "true"
+  MONITOR_WORKFLOWS: "true"
+
+  # Informações dos commits e relatórios
+  SHOW_COMMIT_DETAILS: "true"
+  SHOW_AUTHOR: "true"
+  SHOW_BRANCH: "true"
+  SHOW_TIMESTAMP: "true"
+  SHOW_LINKS: "true"
+  SHOW_SUMMARY: "true"
+  SHOW_PREVIOUS_COMMIT: "true"
+  SHOW_OLD_NEW: "true"
+  SHOW_FILE_LIST: "true"
+  SHOW_FILE_DIFFS: "true"
+  SHOW_FILE_STATS: "true"
+
+  # Tipos de arquivos
+  SHOW_ADDED_FILES: "true"
+  SHOW_MODIFIED_FILES: "true"
+  SHOW_DELETED_FILES: "true"
+  SHOW_RENAMED_FILES: "true"
+
+  # Filtros: valores separados por vírgula.
+  # INCLUDE_PATHS vazio = todas as pastas.
+  INCLUDE_PATHS: ""
+  IGNORE_PATHS: "node_modules/,dist/,build/,.git/,vendor/"
+  # INCLUDE_EXTENSIONS vazio = todas as extensões.
+  INCLUDE_EXTENSIONS: ""
+  EXCLUDE_EXTENSIONS: ".exe,.dll,.pdb"
+  EXCLUDED_FILES: ".env,.env.local,secrets.json,credentials.json"
+
+  # Limites e envio
+  MAX_COMMITS: "30"
+  MAX_FILES: "100"
+  MAX_DIFF_CHARS: "10000"
+  MESSAGE_DELAY: "1200"
+  MAX_EMBEDS_PER_MESSAGE: "10"
+
+  # Cores decimais dos embeds
+  COLOR_ADDED: "5763719"
+  COLOR_MODIFIED: "16763904"
+  COLOR_DELETED: "15548997"
+  COLOR_RENAMED: "10181046"
+  COLOR_GENERAL: "3447003"
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Send repository report
+        uses: actions/github-script@v7
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        with:
+          script: |
+            const p = context.payload;
+            const event = context.eventName;
+            const { owner, repo } = context.repo;
+            const cfg = process.env;
+
+            const enabled = key =>
+              (cfg[key] || "false").toLowerCase() === "true";
+
+            const positiveNumber = (key, fallback) => {
+              const value = Number(cfg[key]);
+              return Number.isFinite(value) && value > 0 ? value : fallback;
+            };
+
+            const webhook = cfg.DISCORD_WEBHOOK;
+            if (!webhook) {
+              throw new Error("Secret DISCORD_WEBHOOK não configurado.");
+            }
+
+            const MAX_FILES = positiveNumber("MAX_FILES", 100);
+            const MAX_DIFF = positiveNumber("MAX_DIFF_CHARS", 10000);
+            const MAX_COMMITS = positiveNumber("MAX_COMMITS", 30);
+            const MESSAGE_DELAY = positiveNumber("MESSAGE_DELAY", 1200);
+            const MAX_EMBEDS = Math.min(10, positiveNumber("MAX_EMBEDS_PER_MESSAGE", 10));
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+            const colors = {
+              added: positiveNumber("COLOR_ADDED", 5763719),
+              modified: positiveNumber("COLOR_MODIFIED", 16763904),
+              removed: positiveNumber("COLOR_DELETED", 15548997),
+              renamed: positiveNumber("COLOR_RENAMED", 10181046),
+              general: positiveNumber("COLOR_GENERAL", 3447003)
+            };
+
+            function makeEmbed(title, description, color) {
+              return {
+                title: String(title || "").slice(0, 256),
+                description: String(description || "").slice(0, 4000),
+                color,
+                timestamp: new Date().toISOString()
+              };
+            }
+
+            // Empacota embeds respeitando o limite agregado de caracteres do Discord.
+            async function sendEmbeds(embeds) {
+              const batches = [];
+              let batch = [];
+              let charCount = 0;
+
+              for (const item of embeds) {
+                const itemSize = (item.title || "").length + (item.description || "").length;
+                if (batch.length && (batch.length >= MAX_EMBEDS || charCount + itemSize > 5700)) {
+                  batches.push(batch);
+                  batch = [];
+                  charCount = 0;
+                }
+                batch.push(item);
+                charCount += itemSize;
+              }
+              if (batch.length) batches.push(batch);
+
+              for (const currentBatch of batches) {
+                let delivered = false;
+
+                for (let attempt = 0; attempt < 5; attempt++) {
+                  const response = await fetch(webhook, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      username: cfg.DISCORD_USERNAME || "Scripts Monitor",
+                      embeds: currentBatch
+                    })
+                  });
+
+                  if (response.ok) {
+                    delivered = true;
+                    break;
+                  }
+
+                  if (response.status === 429) {
+                    const body = await response.json();
+                    await sleep(Math.ceil((body.retry_after || 2) * 1000));
+                    continue;
+                  }
+
+                  throw new Error(`Discord HTTP ${response.status}`);
+                }
+
+                if (!delivered) {
+                  throw new Error("Discord rate limit: número máximo de tentativas excedido.");
+                }
+
+                await sleep(MESSAGE_DELAY);
+              }
+            }
+
+            const parseList = key => (cfg[key] || "")
+              .split(",")
+              .map(value => value.trim().toLowerCase())
+              .filter(Boolean);
+
+            const includePaths = parseList("INCLUDE_PATHS");
+            const ignoredPaths = parseList("IGNORE_PATHS");
+            const includeExtensions = parseList("INCLUDE_EXTENSIONS");
+            const excludedExtensions = parseList("EXCLUDE_EXTENSIONS");
+            const excludedFiles = parseList("EXCLUDED_FILES");
+
+            function isAllowed(file) {
+              const path = (file.filename || "").replaceAll("\\", "/");
+              const lower = path.toLowerCase();
+
+              if (excludedFiles.some(value => lower.endsWith(value))) return false;
+
+              if (ignoredPaths.some(value =>
+                lower.startsWith(value) || lower.includes("/" + value)
+              )) return false;
+
+              if (includePaths.length &&
+                !includePaths.some(value => lower.startsWith(value))) return false;
+
+              const dot = lower.lastIndexOf(".");
+              const extension = dot >= 0 ? lower.slice(dot) : "";
+
+              if (excludedExtensions.includes(extension)) return false;
+              if (includeExtensions.length && !includeExtensions.includes(extension)) return false;
+
+              if (file.status === "added" && !enabled("SHOW_ADDED_FILES")) return false;
+              if (file.status === "modified" && !enabled("SHOW_MODIFIED_FILES")) return false;
+              if (file.status === "removed" && !enabled("SHOW_DELETED_FILES")) return false;
+              if (file.status === "renamed" && !enabled("SHOW_RENAMED_FILES")) return false;
+
+              return true;
+            }
+
+            function summarize(files) {
+              const result = {
+                added: 0, modified: 0, removed: 0, renamed: 0,
+                additions: 0, deletions: 0
+              };
+
+              for (const file of files) {
+                if (Object.hasOwn(result, file.status)) result[file.status]++;
+                result.additions += file.additions || 0;
+                result.deletions += file.deletions || 0;
+              }
+              return result;
+            }
+
+            function fileEmbeds(file, commitSha, parentSha) {
+              const status = file.status || "modified";
+              const color = colors[status] || colors.modified;
+              let description = "";
+
+              if (enabled("SHOW_FILE_STATS")) {
+                description += `**Linhas:** +${file.additions || 0} / -${file.deletions || 0}\n`;
+              }
+
+              if (enabled("SHOW_OLD_NEW")) {
+                description += `**Versão anterior:** ${parentSha ? parentSha.slice(0, 8) : "indisponível"}\n`;
+                description += `**Nova versão:** ${commitSha.slice(0, 8)}\n`;
+              }
+
+              if (file.previous_filename) {
+                description += `**Nome anterior:** ${file.previous_filename}\n`;
+              }
+
+              if (enabled("SHOW_LINKS") && status !== "removed") {
+                description += `[Ver arquivo](https://github.com/${owner}/${repo}/blob/${commitSha}/${encodeURI(file.filename)})\n`;
+              }
+
+              if (enabled("SHOW_LINKS") && parentSha && status !== "added") {
+                const oldPath = file.previous_filename || file.filename;
+                description += `[Ver versão anterior](https://github.com/${owner}/${repo}/blob/${parentSha}/${encodeURI(oldPath)})`;
+              }
+
+              const result = [
+                makeEmbed(`${status.toUpperCase()} • ${file.filename}`, description, color)
+              ];
+
+              if (enabled("SHOW_FILE_DIFFS")) {
+                if (!file.patch) {
+                  result.push(makeEmbed(
+                    "DIFF INDISPONÍVEL",
+                    "Arquivo binário, patch ausente ou não fornecido pela API do GitHub.",
+                    color
+                  ));
+                } else {
+                  const patch = file.patch.slice(0, MAX_DIFF);
+                  const lines = patch.split("\n");
+                  let part = "";
+
+                  for (const line of lines) {
+                    const next = part ? part + "\n" + line : line;
+                    if (next.length > 3200 && part) {
+                      result.push(makeEmbed(
+                        `DIFF • ${file.filename}`,
+                        "```diff\n" + part + "\n```",
+                        color
+                      ));
+                      part = line;
+                    } else {
+                      part = next;
+                    }
+                  }
+
+                  if (part) {
+                    result.push(makeEmbed(
+                      `DIFF • ${file.filename}`,
+                      "```diff\n" + part + "\n```",
+                      color
+                    ));
+                  }
+
+                  if (file.patch.length > MAX_DIFF) {
+                    result.push(makeEmbed(
+                      "DIFF LIMITADO",
+                      `Patch limitado a MAX_DIFF_CHARS (${MAX_DIFF}) caracteres.`,
+                      colors.general
+                    ));
+                  }
+                }
+              }
+
+              return result;
+            }
+
+            async function processCommit(sha, branch) {
+              const { data: commit } = await github.rest.repos.getCommit({
+                owner, repo, ref: sha
+              });
+
+              const parentSha = commit.parents?.[0]?.sha;
+              const rawFiles = commit.files || [];
+              const files = rawFiles.filter(isAllowed);
+              const totals = summarize(files);
+
+              let description = "";
+
+              if (enabled("SHOW_COMMIT_DETAILS")) {
+                description += `**Mensagem:** ${(commit.commit.message || "Sem mensagem").slice(0, 900)}\n`;
+              }
+              if (enabled("SHOW_AUTHOR")) {
+                description += `**Autor:** ${commit.author?.login || commit.commit.author?.name || "Desconhecido"}\n`;
+              }
+              if (enabled("SHOW_BRANCH")) description += `**Branch:** ${branch}\n`;
+              if (enabled("SHOW_TIMESTAMP")) {
+                description += `**Data:** ${commit.commit.author?.date || "indisponível"}\n`;
+              }
+              if (enabled("SHOW_PREVIOUS_COMMIT")) {
+                description += `**Commit anterior:** ${parentSha || "nenhum"}\n`;
+              }
+              if (enabled("SHOW_LINKS")) {
+                description += `[Abrir commit](${commit.html_url})`;
+              }
+
+              const embeds = [
+                makeEmbed(`COMMIT • ${sha.slice(0, 8)}`, description, colors.general)
+              ];
+
+              if (enabled("SHOW_SUMMARY")) {
+                embeds.push(makeEmbed(
+                  "RESUMO DAS ALTERAÇÕES",
+                  `Arquivos: ${files.length}\nAdicionados: ${totals.added}\nModificados: ${totals.modified}\nExcluídos: ${totals.removed}\nRenomeados: ${totals.renamed}\nLinhas adicionadas: +${totals.additions}\nLinhas removidas: -${totals.deletions}`,
+                  colors.general
+                ));
+              }
+
+              if (enabled("SHOW_FILE_LIST")) {
+                for (const file of files.slice(0, MAX_FILES)) {
+                  embeds.push(...fileEmbeds(file, sha, parentSha));
+                }
+              }
+
+              await sendEmbeds(embeds);
+
+              if (rawFiles.length >= 300) {
+                await sendEmbeds([makeEmbed(
+                  "AVISO DE LIMITE DA API",
+                  "O GitHub pode limitar os arquivos retornados para este commit. Consulte o commit diretamente para confirmar a lista completa.",
+                  colors.general
+                )]);
+              }
+
+              if (files.length > MAX_FILES) {
+                await sendEmbeds([makeEmbed(
+                  "LIMITE DE ARQUIVOS",
+                  `${files.length - MAX_FILES} arquivos não foram exibidos devido a MAX_FILES.`,
+                  colors.general
+                )]);
+              }
+            }
+
+            if (event === "push" && enabled("MONITOR_PUSH")) {
+              const branch = (p.ref || "").replace("refs/heads/", "");
+              const commits = p.commits || [];
+
+              await sendEmbeds([makeEmbed(
+                "NOVO PUSH",
+                `**Repositório:** ${owner}/${repo}\n**Branch:** ${branch}\n**Commits:** ${commits.length}\n[Comparar alterações](${p.compare})`,
+                colors.general
+              )]);
+
+              for (const commit of commits.slice(0, MAX_COMMITS)) {
+                await processCommit(commit.id, branch);
+              }
+
+              if (commits.length > MAX_COMMITS) {
+                await sendEmbeds([makeEmbed(
+                  "LIMITE DE COMMITS",
+                  `${commits.length - MAX_COMMITS} commits não foram processados devido a MAX_COMMITS.`,
+                  colors.general
+                )]);
+              }
+            } else if (event === "pull_request" && enabled("MONITOR_PULL_REQUESTS")) {
+              const pr = p.pull_request;
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number: pr.number, per_page: 100
+              });
+              const filtered = files.filter(isAllowed);
+              const totals = summarize(filtered);
+
+              const embeds = [makeEmbed(
+                `PULL REQUEST • ${p.action.toUpperCase()}`,
+                `**Título:** ${pr.title}\n**Autor:** ${pr.user.login}\n**Branch:** ${pr.head.ref} → ${pr.base.ref}\n**Arquivos:** ${filtered.length}\n**Linhas:** +${totals.additions} / -${totals.deletions}\n[Abrir PR](${pr.html_url})`,
+                colors.general
+              )];
+
+              if (enabled("SHOW_FILE_LIST")) {
+                for (const file of filtered.slice(0, MAX_FILES)) {
+                  embeds.push(...fileEmbeds(file, pr.head.sha, pr.base.sha));
+                }
+              }
+              await sendEmbeds(embeds);
+            } else if (event === "issues" && enabled("MONITOR_ISSUES")) {
+              const issue = p.issue;
+              await sendEmbeds([makeEmbed(
+                `ISSUE • ${p.action.toUpperCase()}`,
+                `**Título:** ${issue.title}\n**Autor:** ${issue.user.login}\n[Abrir issue](${issue.html_url})`,
+                colors.general
+              )]);
+            } else if (event === "release" && enabled("MONITOR_RELEASES")) {
+              const release = p.release;
+              await sendEmbeds([makeEmbed(
+                `RELEASE • ${release.tag_name}`,
+                `**Nome:** ${release.name || release.tag_name}\n**Autor:** ${release.author.login}\n**Descrição:** ${(release.body || "Sem descrição").slice(0, 3000)}\n[Abrir release](${release.html_url})`,
+                colors.general
+              )]);
+            } else if (event === "workflow_run" && enabled("MONITOR_WORKFLOWS")) {
+              const run = p.workflow_run;
+              await sendEmbeds([makeEmbed(
+                `WORKFLOW • ${(run.conclusion || run.status).toUpperCase()}`,
+                `**Nome:** ${run.name}\n**Branch:** ${run.head_branch}\n**Autor:** ${run.actor.login}\n[Abrir execução](${run.html_url})`,
+                run.conclusion === "success" ? 5763719 : 15548997
+              )]);
+            } else {
+              core.info(`Evento ${event} ignorado ou desativado.`);
+            }
