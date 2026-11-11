@@ -27,9 +27,8 @@ on:
 env:
 
   # ---------------- WEBHOOK ----------------
-
-  DISCORD_WEBHOOK: ${{https://discord.com/api/webhooks/1569893035146485921/FSjaapE8SSU5g1C18eCVvLd-eboxxPO9iaBLtgMZ8vq1vQYN5Q9Gbm_v9QxYUg0eXV0Z}}
-  DISCORD_USERNAME: "Scripts Auditor"
+  DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+  DISCORD_USERNAME: "Scripts Monitor"
 
   # ---------------- EVENTOS ----------------
 
