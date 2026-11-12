@@ -1,5 +1,5 @@
 --[[
-    Script_By_Geeh_000 - "Tycoon, but one dropper" (Xeno)
+    Script_By_Geeh_000 - "Tycoon, Witha Twist" (solara)
 
  
 
@@ -885,6 +885,104 @@ function SurgeCell:Tick()
 end
 
 ---------------------------------------------------------------------
+-- AUTO COLLECT LOST GEARS (Workspace.LostGears)
+---------------------------------------------------------------------
+local LostGear = newFeature({
+    Id = "lost_gears", Name = "Auto Collect Lost Gears", Category = "Coleta", Interval = 0.4,
+})
+
+local lostGearFolder = nil
+local lostGearAttempts = {} -- [Model] = tentativas
+local LOST_GEAR_MAX_ATTEMPTS = 2
+local LOST_GEAR_TIMEOUT = 3.0
+
+local function isLostGearModel(inst)
+    return inst and inst:IsA("Model") and inst.Name:match("^LostGear%d+$") ~= nil
+end
+
+local function lostGearPosition(model)
+    -- O atributo Spot observado nos modelos é Vector3 e representa o ponto de coleta.
+    local spot = model:GetAttribute("Spot")
+    if typeof(spot) == "Vector3" then return spot end
+
+    local ok, pivot = pcall(function() return model:GetPivot() end)
+    if ok and typeof(pivot) == "CFrame" then return pivot.Position end
+    return nil
+end
+
+function LostGear:OnEnable()
+    lostGearAttempts = {}
+    lostGearFolder = Workspace:FindFirstChild("LostGears")
+    if not lostGearFolder then
+        self:SetStatus("Aguardando Workspace.LostGears", "warn")
+        return
+    end
+    self:SetStatus("Monitorando LostGears", "idle")
+end
+
+function LostGear:OnDisable()
+    lostGearAttempts = {}
+    lostGearFolder = nil
+end
+
+function LostGear:Tick()
+    if not lostGearFolder or lostGearFolder.Parent ~= Workspace then
+        lostGearFolder = Workspace:FindFirstChild("LostGears")
+        if not lostGearFolder then
+            self:SetStatus("Aguardando Workspace.LostGears", "warn")
+            return
+        end
+    end
+    if moveLock then return end
+
+    local target, targetPos
+    for _, inst in ipairs(lostGearFolder:GetChildren()) do
+        if isLostGearModel(inst) then
+            local attempts = lostGearAttempts[inst] or 0
+            if attempts < LOST_GEAR_MAX_ATTEMPTS then
+                local pos = lostGearPosition(inst)
+                if pos then
+                    target, targetPos = inst, pos
+                    break
+                end
+            else
+                lostGearAttempts[inst] = nil
+            end
+        end
+    end
+
+    if not target then
+        self:SetStatus("Aguardando Lost Gears aparecerem", "idle")
+        return
+    end
+
+    moveLock = true
+    lostGearAttempts[target] = (lostGearAttempts[target] or 0) + 1
+    local attempt = lostGearAttempts[target]
+    self:SetStatus("Indo até " .. target.Name .. " (tentativa " .. attempt .. ")...", "work")
+
+    local ok = teleportCollect(targetPos, function()
+        return not self.Enabled or target.Parent ~= lostGearFolder
+    end, LOST_GEAR_TIMEOUT)
+    moveLock = false
+
+    if not self.Enabled then return end
+    if ok and target.Parent ~= lostGearFolder then
+        lostGearAttempts[target] = nil
+        self.Count = self.Count + 1
+        self:SetStatus(target.Name .. " coletado (" .. self.Count .. ")", "ok")
+    elseif target.Parent ~= lostGearFolder then
+        lostGearAttempts[target] = nil
+        self:SetStatus(target.Name .. " saiu do mapa", "ok")
+    elseif attempt >= LOST_GEAR_MAX_ATTEMPTS then
+        self:SetStatus(target.Name .. " não coletado; ignorado", "warn")
+        log(target.Name .. " não foi coletado após " .. attempt .. " tentativas")
+    else
+        self:SetStatus("Sem confirmação de " .. target.Name .. "; nova tentativa", "warn")
+    end
+end
+
+---------------------------------------------------------------------
 -- 4) AUTO COLLECT AIRDROP (Ev Live/Got + posição L + teleporte por proximidade)
 ---------------------------------------------------------------------
 local Airdrop = newFeature({
@@ -1183,6 +1281,88 @@ function Rebirth:Tick()
     end
 end
 
+
+---------------------------------------------------------------------
+-- 6A) AUTO ASCEND (requisito: 100 Rebirths; RemoteFunction Action)
+---------------------------------------------------------------------
+local Ascend = newFeature({
+    Id = "ascend", Name = "Auto Ascend (100 Rebirths)", Category = "Progresso", Interval = 2,
+})
+
+local ascendInvokeBusy = false
+local ASCEND_REQUIRED_REBIRTHS = 100
+
+function Ascend:Tick()
+    if LocalPlayer:GetAttribute("Loaded") == false then
+        self:SetStatus("Aguardando o jogo carregar", "idle")
+        return
+    end
+
+    local rebirths = getNum("Rebirths")
+    if rebirths == nil then
+        self:SetStatus("Aguardando contador de Rebirths", "idle")
+        return
+    end
+
+    if rebirths < ASCEND_REQUIRED_REBIRTHS then
+        self:SetStatus("Aguardando " .. ASCEND_REQUIRED_REBIRTHS .. " Rebirths (" .. rebirths .. "/" .. ASCEND_REQUIRED_REBIRTHS .. ")", "idle")
+        return
+    end
+
+    if ascendInvokeBusy then
+        self:SetStatus("Aguardando resposta do servidor...", "work")
+        return
+    end
+
+    if os.clock() < self.RetryAt then
+        self:SetStatus("Nova tentativa em " .. fmtDuration(self.RetryAt - os.clock()), "warn")
+        return
+    end
+
+    local remote = getSpinRemote()
+    if not remote then
+        self:SetStatus("Aguardando ReplicatedStorage.Remotes.Action...", "warn")
+        return
+    end
+
+    local beforeRebirths = rebirths
+    ascendInvokeBusy = true
+    self:SetStatus("Requisito atendido; solicitando Ascend...", "work")
+
+    local callOk, result = pcall(function()
+        return remote:InvokeServer("Ascend")
+    end)
+    ascendInvokeBusy = false
+
+    if not callOk then
+        self.Fails = self.Fails + 1
+        self.RetryAt = os.clock() + math.min(60, 10 + self.Fails * 5)
+        self:SetStatus("Falha no Ascend: " .. tostring(result), "err")
+        return
+    end
+
+    -- O Ascend deve reiniciar a contagem de Rebirths. Não considera a
+    -- chamada concluída apenas porque InvokeServer retornou sem erro.
+    local changed = waitUntil(function()
+        local rebirthsNow = getNum("Rebirths")
+        return rebirthsNow ~= nil and rebirthsNow < ASCEND_REQUIRED_REBIRTHS
+            and rebirthsNow < beforeRebirths
+    end, 12, 0.2)
+
+    if changed then
+        self.Fails = 0
+        self.RetryAt = 0
+        self.Count = self.Count + 1
+        self:SetStatus("Ascend confirmado (" .. self.Count .. "x)", "ok")
+    else
+        self.RetryAt = os.clock() + 15
+        if type(result) == "table" and result.msg then
+            self:SetStatus("Ascend não confirmado: " .. tostring(result.msg), "warn")
+        else
+            self:SetStatus("Solicitação enviada; aguardando reinício dos Rebirths", "warn")
+        end
+    end
+end
 
 ---------------------------------------------------------------------
 -- 7) AUTO BUY (teleporte contínuo para Pads verdes do próprio Tycoon)
@@ -1592,6 +1772,67 @@ function Jump:OnDisable()
     end
 end
 
+
+-- Plataforma local: cria 20 studs abaixo da posição atual e posiciona o jogador sobre ela.
+-- O objeto existe somente no cliente; não é criado nem confirmado pelo servidor.
+local FloatingPlatform = newFeature({
+    Id = "floating_platform", Name = "Plataforma -20 studs", Category = "Player", Interval = 1,
+})
+
+function FloatingPlatform:OnEnable()
+    local root, humanoid = getCharacterParts()
+    if not root or not humanoid then
+        self:SetStatus("Personagem indisponível", "warn")
+        return
+    end
+
+    -- Remove uma plataforma anterior desta função, se ainda existir.
+    if self.Platform then
+        pcall(function() self.Platform:Destroy() end)
+        self.Platform = nil
+    end
+
+    local platform = Instance.new("Part")
+    platform.Name = "TycoonHelper_LocalFloatingPlatform"
+    platform.Size = Vector3.new(14, 1, 14)
+    platform.Anchored = true
+    platform.CanCollide = true
+    platform.CanTouch = false
+    platform.CanQuery = true
+    platform.Material = Enum.Material.SmoothPlastic
+    platform.Color = Color3.fromRGB(75, 145, 235)
+    platform.Transparency = 0.15
+
+    -- A altura do centro da plataforma fica exatamente 20 studs abaixo do HRP.
+    local platformPosition = root.Position - Vector3.new(0, 20, 0)
+    platform.CFrame = CFrame.new(platformPosition)
+    platform.Parent = Workspace
+    self.Platform = platform
+
+    -- Coloca os pés do personagem ligeiramente acima da face superior da plataforma.
+    local standingHeight = platform.Size.Y * 0.5 + humanoid.HipHeight + root.Size.Y * 0.5 + 0.1
+    root.CFrame = CFrame.new(platformPosition + Vector3.new(0, standingHeight, 0))
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+
+    self:SetStatus("Plataforma criada 20 studs abaixo; jogador teleportado", "ok")
+end
+
+function FloatingPlatform:Tick()
+    if self.Platform and self.Platform.Parent then
+        self:SetStatus("Ativa | plataforma local abaixo do jogador", "ok")
+    else
+        self:SetStatus("Plataforma não encontrada", "warn")
+    end
+end
+
+function FloatingPlatform:OnDisable()
+    if self.Platform then
+        pcall(function() self.Platform:Destroy() end)
+        self.Platform = nil
+    end
+    self:SetStatus("Plataforma removida", "idle")
+end
 
 local TeleportPlayer = newFeature({
     Id="teleport_player", Name="Teleport to Player", Category="Player",
