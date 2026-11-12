@@ -2937,18 +2937,131 @@ local function buildGui()
         end))
     end
 
-    local note = Instance.new("TextLabel")
-    note.LayoutOrder = nextOrder()
-    note.Size = UDim2.new(1, 0, 0, 40)
-    note.BackgroundTransparency = 1
-    note.Text = "Fly: WASD + Espaço/Ctrl. Noclip atravessa colisões. Abra Players para selecionar alguém e teleportar. Rejoin e Server Hop são ações pontuais."
-    note.TextColor3 = COLORS.sub
-    note.Font = Enum.Font.Gotham
-    note.TextSize = 10
-    note.TextWrapped = true
-    note.TextXAlignment = Enum.TextXAlignment.Left
-    note.TextYAlignment = Enum.TextYAlignment.Top
-    note.Parent = body
+    -----------------------------------------------------------------
+    -- Cartão da comunidade Discord
+    -----------------------------------------------------------------
+    local discordCard = Instance.new("Frame")
+    discordCard.Name = "DiscordCommunity"
+    discordCard.LayoutOrder = nextOrder()
+    discordCard.Size = UDim2.new(1, 0, 0, 132)
+    discordCard.BackgroundColor3 = COLORS.row
+    discordCard.BorderSizePixel = 0
+    discordCard.Parent = body
+    corner(discordCard, 8)
+
+    local discordTitle = Instance.new("TextLabel")
+    discordTitle.Position = UDim2.fromOffset(10, 8)
+    discordTitle.Size = UDim2.new(1, -20, 0, 18)
+    discordTitle.BackgroundTransparency = 1
+    discordTitle.Text = "GEEH SCRIPTS  |  DISCORD COMMUNITY"
+    discordTitle.TextColor3 = COLORS.accent
+    discordTitle.Font = Enum.Font.GothamBold
+    discordTitle.TextSize = 11
+    discordTitle.TextXAlignment = Enum.TextXAlignment.Left
+    discordTitle.Parent = discordCard
+
+    local discordDescription = Instance.new("TextLabel")
+    discordDescription.Position = UDim2.fromOffset(10, 29)
+    discordDescription.Size = UDim2.new(1, -20, 0, 39)
+    discordDescription.BackgroundTransparency = 1
+    discordDescription.Text = "Join the community for script updates, new releases, support, suggestions and discussions."
+    discordDescription.TextColor3 = COLORS.sub
+    discordDescription.Font = Enum.Font.Gotham
+    discordDescription.TextSize = 10
+    discordDescription.TextWrapped = true
+    discordDescription.TextXAlignment = Enum.TextXAlignment.Left
+    discordDescription.TextYAlignment = Enum.TextYAlignment.Top
+    discordDescription.Parent = discordCard
+
+    local discordLink = "https://discord.gg/TxE9peQTg2"
+    local discordLinkLabel = Instance.new("TextLabel")
+    discordLinkLabel.Position = UDim2.fromOffset(10, 70)
+    discordLinkLabel.Size = UDim2.new(1, -20, 0, 16)
+    discordLinkLabel.BackgroundTransparency = 1
+    discordLinkLabel.Text = discordLink
+    discordLinkLabel.TextColor3 = Color3.fromRGB(120, 175, 255)
+    discordLinkLabel.Font = Enum.Font.Code
+    discordLinkLabel.TextSize = 10
+    discordLinkLabel.TextXAlignment = Enum.TextXAlignment.Left
+    discordLinkLabel.Parent = discordCard
+
+    local discordButtonRow = Instance.new("Frame")
+    discordButtonRow.Position = UDim2.fromOffset(8, 94)
+    discordButtonRow.Size = UDim2.new(1, -16, 0, 29)
+    discordButtonRow.BackgroundTransparency = 1
+    discordButtonRow.Parent = discordCard
+
+    local discordButtonLayout = Instance.new("UIListLayout")
+    discordButtonLayout.FillDirection = Enum.FillDirection.Horizontal
+    discordButtonLayout.Padding = UDim.new(0, 7)
+    discordButtonLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    discordButtonLayout.Parent = discordButtonRow
+
+    local function makeDiscordButton(name, text, color)
+        local button = Instance.new("TextButton")
+        button.Name = name
+        button.Size = UDim2.new(0.5, -4, 1, 0)
+        button.BackgroundColor3 = color
+        button.BorderSizePixel = 0
+        button.Text = text
+        button.TextColor3 = COLORS.text
+        button.Font = Enum.Font.GothamBold
+        button.TextSize = 10
+        button.Parent = discordButtonRow
+        corner(button, 6)
+        return button
+    end
+
+    local copyDiscordButton = makeDiscordButton("CopyDiscordInvite", "COPY INVITE LINK", COLORS.off)
+    local openDiscordButton = makeDiscordButton("OpenDiscordInvite", "OPEN DISCORD", Color3.fromRGB(78, 92, 180))
+
+    local discordStatus = Instance.new("TextLabel")
+    discordStatus.Position = UDim2.new(0, 10, 1, -17)
+    discordStatus.Size = UDim2.new(1, -20, 0, 13)
+    discordStatus.BackgroundTransparency = 1
+    discordStatus.Text = ""
+    discordStatus.TextColor3 = COLORS.kinds.ok
+    discordStatus.Font = Enum.Font.Gotham
+    discordStatus.TextSize = 9
+    discordStatus.TextXAlignment = Enum.TextXAlignment.Left
+    discordStatus.Parent = discordCard
+
+    track(copyDiscordButton.MouseButton1Click:Connect(function()
+        local copied = false
+        if type(setclipboard) == "function" then
+            copied = pcall(setclipboard, discordLink)
+        elseif type(toclipboard) == "function" then
+            copied = pcall(toclipboard, discordLink)
+        end
+        if copied then
+            discordStatus.Text = "Invite link copied to clipboard."
+            discordStatus.TextColor3 = COLORS.kinds.ok
+        else
+            discordStatus.Text = "Clipboard is unavailable in this executor."
+            discordStatus.TextColor3 = COLORS.kinds.warn
+        end
+    end))
+
+    track(openDiscordButton.MouseButton1Click:Connect(function()
+        local opened = false
+        -- Alguns executores oferecem uma função própria para abrir URLs.
+        if type(openurl) == "function" then
+            opened = pcall(openurl, discordLink)
+        end
+        -- Fallback padrão do Roblox: abre o convite no navegador externo.
+        if not opened then
+            opened = pcall(function()
+                GuiService:OpenBrowserWindow(discordLink)
+            end)
+        end
+        if opened then
+            discordStatus.Text = "Opening Discord invite..."
+            discordStatus.TextColor3 = COLORS.kinds.ok
+        else
+            discordStatus.Text = "Could not open the link; use Copy Invite Link."
+            discordStatus.TextColor3 = COLORS.kinds.warn
+        end
+    end))
 
     -- Atualização da tela (leve: só mexe no que mudou)
     task.spawn(function()
